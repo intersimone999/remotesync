@@ -1,0 +1,141 @@
+#!/usr/bin/ruby
+
+require_relative "../lib/commons"
+
+args = CmdParser.setup("rrinit", :hostname, :path) do |opts|
+    opts.on("-pPORT", "--port=PORT", "Port of the remote host") do |v|
+        CmdParser.set :port, v
+    end
+    
+    opts.on("-uUSER", "--user=USER", "User of the remote host") do |v|
+        CmdParser.set :user, v
+    end
+    
+    opts.on("-nNETNS", "--netns=NETNS", "Network namespace") do |v|
+        CmdParser.set :netns, v
+    end
+    
+    opts.on("-oOWNER", "--owner=OWNER", "Ownership of the files (defaults to the current user)") do |v|
+        CmdParser.set :owner, v
+    end
+    
+    opts.on("-r", "--recursive", "Ownership of the files (defaults to the current user)") do
+        CmdParser.set :recursive, true
+    end
+    
+    opts.on("-D", "--delete", "Delete all the sync files (asks for confirmation)") do
+        CmdParser.set :delete, true
+    end
+    
+    opts.on("-f", "--force", "Force the overwrite of existing data") do
+        CmdParser.set :force, true
+    end
+    
+    opts.on("-p", "--propagate", "Propagate the root file to all the sub-directories") do
+        CmdParser.set :propagate, true
+    end
+    
+    opts.on("-u", "--unlock", "Unlock all the remote information files") do
+        CmdParser.set :unlock, true
+    end
+    
+    opts.on("-R", "--pull-only", "Allows only the pull from the remote") do
+        CmdParser.set :pullonly, true
+    end
+    
+    opts.on("-W", "--push-only", "Allows only the push to the remote") do
+        CmdParser.set :pushonly, true
+    end
+end
+
+CmdParser.assert do
+    "Do not use -p with -r (it is implicitly recursive). Aborting." if CmdParser.opt(:recursive) && CmdParser.opt(:propagate)
+    "Do not use -p with -D (incompatible commands). Aborting."      if CmdParser.opt(:delete) && CmdParser.opt(:propagate)
+    "Do not use -u with -p (incompatible commands). Aborting."      if CmdParser.opt(:unlock) && CmdParser.opt(:propagate)
+    "Do not use -u with -D (incompatible commands). Aborting."      if CmdParser.opt(:delete) && CmdParser.opt(:unlock)
+    
+    "Cannot have a both pull-only and push-only. Aborting."         if CmdParser.opt(:pullonly) && CmdParser.opt(:pushonly)
+end
+
+if CmdParser.opt :delete
+    puts "Are you sure you want to delete all the sync information? [y/N]"
+    confirm = gets.chomp.downcase
+    if confirm != "y"
+        puts "Aborted."
+        exit
+    end
+    
+elsif CmdParser.opt :propagate
+    puts "Propagating the remote information to all the subfolders..."
+    unless FileTest.exists? RemoteInfo::FILENAME
+        puts "Cannot propagate: initialize this directory first"
+        exit
+    end
+    
+    rfile = RemoteInfo.load
+    
+    CmdParser.set :port, rfile.port
+    CmdParser.set :user, rfile.user
+    CmdParser.set :netns, rfile.netns
+    CmdParser.set :owner, rfile.owner
+    CmdParser.set :recursive, true
+    args[:hostname] = rfile.host
+    args[:path] = rfile.path
+    
+    vputs "Propagation information:"
+    vputs "\tHost: #{rfile.host}" if rfile.user
+    vputs "\tPath: #{rfile.path}" if rfile.user
+    vputs "\tPort: #{rfile.port}" if rfile.port
+    vputs "\tUser: #{rfile.user}" if rfile.user
+    vputs "\tNetwork namespace: #{rfile.netns}" if rfile.netns
+    vputs "\tOwner: #{rfile.owner}" if rfile.owner
+    
+elsif CmdParser.opt :unlock
+    
+else
+    err = false
+    unless args[:hostname]
+        puts "You have to specify the remote hostname."
+        err = true
+    end
+    
+    unless args[:path]
+        puts "You have to specify the remote path."
+        err = true
+    end
+    
+    exit if err
+    
+    sub = CmdParser.get(:recursive) ? " and its subdirectories" : ""
+    puts "Initializing the directory#{sub}..."
+end
+
+FS.each_folder(".", CmdParser.opt(:recursive)) do |current|
+    if CmdParser.opt :delete
+        puts "Deleting all the remote files..."
+        OS.remove_file File.join(current, RemoteInfo::FILENAME)
+    elsif CmdParser.opt :unlock
+        puts "Unlocking all the remote files..."
+        RemoteInfo.unlock_all current
+    else
+        if CmdParser.opt(:force) || !FileTest.exists?(File.join(current, RemoteInfo::FILENAME))
+            rfile = RemoteInfo.new
+            rfile.port = CmdParser.opt :port
+            rfile.user = CmdParser.opt :user
+            rfile.netns = CmdParser.opt :netns
+            rfile.owner = CmdParser.opt :owner
+            rfile.operations = "w" if CmdParser.opt :pushonly
+            rfile.operations = "r" if CmdParser.opt :pullonly
+
+            rfile.host = args[:hostname]
+            rfile.path = (current != "." ? File.join(args[:path], current) : args[:path])
+            
+            vputs "Writing remote information for #{current}..."
+            rfile.save_info current
+        else
+            vputs "Skipping #{current} (already exists)..."
+        end
+    end
+end
+
+puts "Done!"

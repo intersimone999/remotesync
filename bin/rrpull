@@ -1,0 +1,67 @@
+#!/usr/bin/ruby
+
+require_relative "../lib/commons"
+
+args = CmdParser.setup("rrpull") do |opts|
+    opts.on("-fFILE", "--file=FILE", "File to pull") do |v|
+        CmdParser.set :file, v
+    end
+    
+    opts.on("-dDIR", "--directory=DIR", "Directory to pull") do |v|
+        CmdParser.set :directory, v
+    end
+    
+    opts.on("-oOWNER", "--owner=OWNER", "Ownership of the files (defaults to the current user)") do |v|
+        CmdParser.set :owner, v
+    end
+end
+
+CmdParser.assert do
+    "Specify either the file or the directory to pull" if CmdParser.opt(:file) && CmdParser.opt(:directory)
+end
+
+begin
+    remote_info    = RemoteInfo.load
+    
+    unless remote_info.can_pull?
+        puts "Pull forbidden. Re-initialize to avoid."
+        exit
+    end
+    
+    isdir = !CmdParser.opt(:file)
+    
+    OS.run "mkdir -p \"#{CmdParser.opt(:directory)}\"" if CmdParser.opt(:directory)
+    
+    #Lock all the remote information files
+    RemoteInfo.lock_all(CmdParser.opt(:directory) || ".", isdir) do
+        vputs "Locked all the remote information files in the path"
+        local   = ScpUtils.local CmdParser.opt(:file), CmdParser.opt(:directory)
+        remote  = ScpUtils.remote local, remote_info
+        remote = File.join(remote, ".")
+        
+        command = ScpUtils.scp remote, local, isdir
+        
+        new_owner = CmdParser.opt(:owner) || remote_info.owner || OS.username
+        if remote_info.netns
+            puts "Requiring root privileges to run in network namespace..."
+            OS.run "sudo ip netns exec #{remote_info.netns} #{command}"
+            new_owner = OS.username unless new_owner
+        else
+            OS.run command
+        end
+        
+        if new_owner
+            puts "Requiring root privileges to change ownership..."
+            OS.run "sudo chown #{new_owner} \"#{local}\" #{isdir ? "-R" : ""}"
+        end
+        vputs "Unlocked all the remote information files in the path"
+    end
+    
+    #Propagates the creation of remote file to all the new subfolders
+    vputs "Calling #{INIT_COMMAND} to propagate the information..."
+    OS.run "#{INIT_COMMAND} -p"
+rescue
+    puts "Please, use rrinit before rrpull"
+    exit
+end
+puts "The local version is up to date."
