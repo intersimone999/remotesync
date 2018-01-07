@@ -1,4 +1,6 @@
 # remotesync
+[![Gem Version](https://badge.fury.io/rb/remotesync.svg)](https://badge.fury.io/rb/remotesync)
+
 This makes very easy to keep remote/local folders synched. It works through three basic commands: `rrinit`, to initialize a folder;
 `rrpull`, to update the local folder from the remote one; `rrpush`, to update the remote folder from the local one.
 remotesync requires ssh and uses the `scp` command to work.
