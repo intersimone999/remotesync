@@ -1,8 +1,10 @@
 require "optparse"
+require "open3"
+require "colorize"
 
-INIT_COMMAND = "rinit"
-PUSH_COMMAND = "rpush"
-PULL_COMMAND = "rpull"
+INIT_COMMAND = "rrinit"
+PUSH_COMMAND = "rrpush"
+PULL_COMMAND = "rrpull"
 
 class RemoteInfo
     FILENAME = ".reminfo"
@@ -25,10 +27,14 @@ class RemoteInfo
         @operations = "rw"
     end
     
-    def self.load
+    def self.load(folder=".")
         rinfo = RemoteInfo.new
-        rinfo.read_info
+        rinfo.read_info(folder)
         return rinfo
+    end
+    
+    def self.filename(folder)
+        return File.join(folder, FILENAME)
     end
     
     def can_pull?
@@ -39,8 +45,8 @@ class RemoteInfo
         return @operations.include? "w"
     end
     
-    def read_info
-        info = File.read(FILENAME)
+    def read_info(folder)
+        info = File.read(File.join(folder, FILENAME))
         
         rows = info.split "\n"
         rows.each do |r|
@@ -143,12 +149,11 @@ class ScpUtils
         path = file.path
         
         userstring = user ? user + "@" : ""
-        portstring = port ? ":" + port : ""
         
         remotepath = path
         remotepath = File.join(remotepath, local) if local && local != "."
         
-        result = "#{userstring}#{host}#{portstring}:#{remotepath}"
+        result = "#{userstring}#{host}:#{remotepath}"
     end
     
     def self.local(*candidates)
@@ -159,14 +164,17 @@ class ScpUtils
         return "."
     end
     
-    def self.scp(from, to, dir)
+    def self.scp(from, to, dir, port=nil)
         dirstring = dir ? "-r" : ""
-        return "scp #{dirstring} \"#{from}\" \"#{to}\""
+        portstring = port ? "-P " + port : ""
+        
+        return "scp #{portstring} #{dirstring} \"#{from}\" \"#{to}\""
     end
 end
 
 class CmdParser
     @@data = {}
+    @@bindings = {}
     
     def self.opt(key)
         return @@data[key]
@@ -180,7 +188,9 @@ class CmdParser
         parser = OptionParser.new do |opts|
             opts.banner = "Usage: #{cmd} [options] #{args.join " "}"
             
+            @@opts = opts
             yield opts
+            @@opts = nil
             
             opts.on("-v", "--verbose", "Writes a lot of information") do
                 CmdParser.set :verbose, true
@@ -202,10 +212,39 @@ class CmdParser
         return arguments
     end
     
+    def self.autoset_flag(short, long, description, flag, incompatibles=[])
+        @@bindings[flag] = short
+        @@opts.on(short, long, description) do
+            incompatibles.each do |incompatible|
+                CmdParser.assert_not_set incompatible, short, @@bindings[incompatible]
+            end
+            
+            CmdParser.set flag, true
+        end
+    end
+    
+    def self.autoset_param(short, long, description, flag, incompatibles=[])
+        @@bindings[flag] = short
+        @@opts.on(short, long, description) do |v|
+            incompatibles.each do |incompatible|
+                CmdParser.assert_not_set incompatible, short, @@bindings[incompatible]
+            end
+            
+            CmdParser.set flag, v
+        end
+    end
+    
     def self.assert
         error_message = yield
         if error_message
             puts error_message
+            exit
+        end
+    end
+    
+    def self.assert_not_set(forbidden_key, actual_param, forbidden_param, message="incompatible commands")
+        if CmdParser.opt(forbidden_key) != nil
+            puts "Do not use #{forbidden_param} with #{actual_param} (#{message}). Aborting."
             exit
         end
     end
@@ -222,7 +261,8 @@ class ConsoleRunner
     
     def run(cmd)
         vputs "Executing command: #{cmd}"
-        `#{cmd}`
+        stdout, stderr, status = Open3.capture3(cmd)
+        return [stdout, stderr, status]
     end
 end
 

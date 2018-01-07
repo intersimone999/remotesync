@@ -2,42 +2,34 @@
 
 require_relative "../lib/commons"
 
-args = CmdParser.setup("rrpush") do |opts|
-    opts.on("-fFILE", "--file=FILE", "File to push") do |v|
-        CmdParser.set :file, v
-    end
-    
-    opts.on("-dDIR", "--directory=DIR", "Directory to push") do |v|
-        CmdParser.set :directory, v
-    end
+args = CmdParser.setup(PUSH_COMMAND) do |opts|
+    CmdParser.autoset_param "-fFILE", "--file=FILE", "File to push", :file, [:directory]
+    CmdParser.autoset_param "-dDIR", "--directory=DIR", "Directory to push", :directory, [:file]
 end
 
-CmdParser.assert do
-    "Specify either the file or the directory to push" if CmdParser.opt(:file) && CmdParser.opt(:directory)
-end
-
-begin
-    remote_info    = RemoteInfo.load
-    
-    unless remote_info.can_push?
-        puts "Pull forbidden. Re-initialize to avoid."
-        exit
-    end
-    
-    isdir   = !CmdParser.opt(:file)
-
-    local   = ScpUtils.local CmdParser.opt(:file), CmdParser.opt(:directory)
-    remote  = ScpUtils.remote local, remote_info
-    
-    command = ScpUtils.scp local, remote, isdir
-    if remote_info.netns
-        puts "Requiring root privileges to run in network namespace..."
-        OS.run "sudo ip netns exec #{remote_info.netns} #{command}"
-    else
-        OS.run command
-    end
-rescue
-    puts "Please, use rrinit before rrpush"
+unless FileTest.exists? RemoteInfo.filename(".")
+    puts "Error".red + ": please, use #{INIT_COMMAND} before #{PUSH_COMMAND}"
     exit
 end
-puts "The remote version is up to date."
+
+remote_info    = RemoteInfo.load
+
+unless remote_info.can_push?
+    puts "Error".red + ": push forbidden (pull-only directory). Aborted."
+    exit
+end
+
+isdir   = !CmdParser.opt(:file)
+
+local   = ScpUtils.local CmdParser.opt(:file), CmdParser.opt(:directory)
+remote  = ScpUtils.remote local, remote_info
+
+command = ScpUtils.scp local, remote, isdir, remote_info.port
+if remote_info.netns
+    puts "Requiring root privileges to run in network namespace..."
+    OS.run "sudo ip netns exec #{remote_info.netns} #{command}"
+else
+    OS.run command
+end
+
+puts "The remote version is up to date.".green

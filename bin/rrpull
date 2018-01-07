@@ -2,66 +2,74 @@
 
 require_relative "../lib/commons"
 
-args = CmdParser.setup("rrpull") do |opts|
-    opts.on("-fFILE", "--file=FILE", "File to pull") do |v|
-        CmdParser.set :file, v
-    end
+args = CmdParser.setup(PULL_COMMAND) do |opts|
+    CmdParser.autoset_param "-fFILE", "--file=FILE", "File to push", :file, [:directory]
+    CmdParser.autoset_param "-dDIR", "--directory=DIR", "Directory to push", :directory, [:file]
     
-    opts.on("-dDIR", "--directory=DIR", "Directory to pull") do |v|
-        CmdParser.set :directory, v
-    end
-    
-    opts.on("-oOWNER", "--owner=OWNER", "Ownership of the files (defaults to the current user)") do |v|
-        CmdParser.set :owner, v
-    end
+    CmdParser.autoset_param "-oOWNER", "--owner=OWNER", "Ownership of the files (defaults to the current user)", :owner
 end
 
-CmdParser.assert do
-    "Specify either the file or the directory to pull" if CmdParser.opt(:file) && CmdParser.opt(:directory)
+unless FileTest.exists? RemoteInfo.filename(".")
+    puts "Error".red + ": please, use #{INIT_COMMAND} before #{PULL_COMMAND}"
+    exit
 end
 
-begin
-    remote_info    = RemoteInfo.load
+remote_info    = RemoteInfo.load
+
+unless remote_info.can_pull?
+    puts "Error".red + ": pull forbidden (push-only directory). Aborted."
+    exit
+end
+
+isdir = !CmdParser.opt(:file)
+
+OS.run "mkdir -p \"#{CmdParser.opt(:directory)}\"" if CmdParser.opt(:directory)
+
+#Lock all the remote information files
+RemoteInfo.lock_all(CmdParser.opt(:directory) || ".", isdir) do
+    vputs "Locked all the remote information files in the path"
+    local   = ScpUtils.local CmdParser.opt(:file), CmdParser.opt(:directory)
+    remote  = ScpUtils.remote local, remote_info
+    remote = File.join(remote, ".")
     
-    unless remote_info.can_pull?
-        puts "Pull forbidden. Re-initialize to avoid."
+    command = ScpUtils.scp remote, local, isdir, remote_info.port
+    
+    new_owner = CmdParser.opt(:owner) || remote_info.owner || OS.username
+    result = nil
+    if remote_info.netns
+        puts "Requiring root privileges to run in network namespace..."
+        result = OS.run "sudo ip netns exec #{remote_info.netns} #{command}"
+        new_owner = OS.username unless new_owner
+    else
+        result = OS.run command
+    end
+    
+    unless result
+        puts "An error occurred while executing the copy command. Exiting"
+        RemoteInfo.unlock_all
         exit
     end
     
-    isdir = !CmdParser.opt(:file)
-    
-    OS.run "mkdir -p \"#{CmdParser.opt(:directory)}\"" if CmdParser.opt(:directory)
-    
-    #Lock all the remote information files
-    RemoteInfo.lock_all(CmdParser.opt(:directory) || ".", isdir) do
-        vputs "Locked all the remote information files in the path"
-        local   = ScpUtils.local CmdParser.opt(:file), CmdParser.opt(:directory)
-        remote  = ScpUtils.remote local, remote_info
-        remote = File.join(remote, ".")
-        
-        command = ScpUtils.scp remote, local, isdir
-        
-        new_owner = CmdParser.opt(:owner) || remote_info.owner || OS.username
-        if remote_info.netns
-            puts "Requiring root privileges to run in network namespace..."
-            OS.run "sudo ip netns exec #{remote_info.netns} #{command}"
-            new_owner = OS.username unless new_owner
-        else
-            OS.run command
+    result[1].split("\n").each do |errline|
+        if errline.downcase.include?("permission denied") && !errline.downcase.include?(RemoteInfo::FILENAME)
+            puts "Error:" + errline
         end
-        
-        if new_owner
-            puts "Requiring root privileges to change ownership..."
-            OS.run "sudo chown #{new_owner} \"#{local}\" #{isdir ? "-R" : ""}"
-        end
-        vputs "Unlocked all the remote information files in the path"
     end
     
-    #Propagates the creation of remote file to all the new subfolders
-    vputs "Calling #{INIT_COMMAND} to propagate the information..."
-    OS.run "#{INIT_COMMAND} -p"
-rescue
-    puts "Please, use rrinit before rrpull"
-    exit
+    if new_owner
+        puts "Requiring root privileges to change ownership..."
+        OS.run "sudo chown #{new_owner} \"#{local}\" #{isdir ? "-R" : ""}"
+    end
+    vputs "Unlocked all the remote information files in the path"
 end
-puts "The local version is up to date."
+
+rinit_script = File.join File.expand_path(File.dirname(__FILE__)), INIT_COMMAND
+#Propagates the creation of remote file to all the new subfolders
+vputs "Calling #{INIT_COMMAND} to propagate the information..."
+result = OS.run "ruby \"#{rinit_script}\" -p"
+puts result[0]
+if result[1] != ""
+    puts "Error".red + ":" + result[1]
+end
+    
+puts "The local version is up to date.".green
